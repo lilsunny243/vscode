@@ -7,7 +7,6 @@ import { CachedExtensionScanner } from 'vs/workbench/services/extensions/electro
 import { AbstractExtensionService, ExtensionHostCrashTracker, ExtensionRunningPreference, extensionRunningPreferenceToString, filterByRunningLocation } from 'vs/workbench/services/extensions/common/abstractExtensionService';
 import * as nls from 'vs/nls';
 import * as performance from 'vs/base/common/performance';
-import { runWhenIdle } from 'vs/base/common/async';
 import { IWorkbenchEnvironmentService } from 'vs/workbench/services/environment/common/environmentService';
 import { IExtensionGalleryService } from 'vs/platform/extensionManagement/common/extensionManagement';
 import { IWorkbenchExtensionEnablementService, EnablementState, IWorkbenchExtensionManagementService } from 'vs/workbench/services/extensionManagement/common/extensionManagement';
@@ -52,6 +51,7 @@ import { IUserDataProfileService } from 'vs/workbench/services/userDataProfile/c
 import { LegacyNativeLocalProcessExtensionHost } from 'vs/workbench/services/extensions/electron-sandbox/nativeLocalProcessExtensionHost';
 import { InstantiationType, registerSingleton } from 'vs/platform/instantiation/common/extensions';
 import { process } from 'vs/base/parts/sandbox/electron-sandbox/globals';
+import { IRemoteExtensionsScannerService } from 'vs/platform/remote/common/remoteExtensionsScanner';
 import { IWorkbenchIssueService } from 'vs/workbench/services/issue/common/issue';
 
 export class NativeExtensionService extends AbstractExtensionService implements IExtensionService {
@@ -77,6 +77,7 @@ export class NativeExtensionService extends AbstractExtensionService implements 
 		@IExtensionManifestPropertiesService extensionManifestPropertiesService: IExtensionManifestPropertiesService,
 		@ILogService logService: ILogService,
 		@IRemoteAgentService remoteAgentService: IRemoteAgentService,
+		@IRemoteExtensionsScannerService remoteExtensionsScannerService: IRemoteExtensionsScannerService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@IRemoteAuthorityResolverService private readonly _remoteAuthorityResolverService: IRemoteAuthorityResolverService,
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
@@ -100,6 +101,7 @@ export class NativeExtensionService extends AbstractExtensionService implements 
 			extensionManifestPropertiesService,
 			logService,
 			remoteAgentService,
+			remoteExtensionsScannerService,
 			lifecycleService,
 			userDataProfileService
 		);
@@ -114,12 +116,7 @@ export class NativeExtensionService extends AbstractExtensionService implements 
 		// some editors require the extension host to restore
 		// and this would result in a deadlock
 		// see https://github.com/microsoft/vscode/issues/41322
-		lifecycleService.when(LifecyclePhase.Ready).then(() => {
-			// reschedule to ensure this runs after restoring viewlets, panels, and editors
-			runWhenIdle(() => {
-				this._initialize();
-			}, 50 /*max delay*/);
-		});
+		lifecycleService.when(LifecyclePhase.Ready).then(() => this._initialize());
 	}
 
 	private _isLocalWebWorkerEnabled(): [boolean, boolean] {
@@ -146,7 +143,7 @@ export class NativeExtensionService extends AbstractExtensionService implements 
 
 	protected _scanSingleExtension(extension: IExtension): Promise<IExtensionDescription | null> {
 		if (extension.location.scheme === Schemas.vscodeRemote) {
-			return this._remoteAgentService.scanSingleExtension(extension.location, extension.type === ExtensionType.System);
+			return this._remoteExtensionsScannerService.scanSingleExtension(extension.location, extension.type === ExtensionType.System);
 		}
 
 		return this._extensionScanner.scanSingleExtension(extension.location.fsPath, extension.type === ExtensionType.System);
@@ -571,7 +568,7 @@ export class NativeExtensionService extends AbstractExtensionService implements 
 			// fetch the remote environment
 			[remoteEnv, remoteExtensions] = await Promise.all([
 				this._remoteAgentService.getEnvironment(),
-				this._remoteAgentService.scanExtensions()
+				this._remoteExtensionsScannerService.scanExtensions()
 			]);
 
 			if (!remoteEnv) {
