@@ -264,6 +264,8 @@ export interface CSSStyle {
 	height: number | string;
 	width: number | string;
 	top: number | string;
+	visibility: 'visible' | 'hidden' | 'collapse';
+	display: 'block' | 'inline' | 'inline-block' | 'flex' | 'none';
 }
 
 export function applyStyle(domNode: HTMLElement, style: Partial<{ [TKey in keyof CSSStyle]: CSSStyle[TKey] | IObservable<CSSStyle[TKey] | undefined> | undefined }>) {
@@ -331,7 +333,7 @@ export function applyViewZones(editor: ICodeEditor, viewZones: IObservable<IObse
 				viewZonIdsPerViewZone.set(z, id);
 			}
 		});
-		if (setIsUpdating) { setIsUpdating(true); }
+		if (setIsUpdating) { setIsUpdating(false); }
 
 		store.add(autorunHandleChanges('layoutZone on change', {
 			createEmptyChangeSummary() {
@@ -351,7 +353,7 @@ export function applyViewZones(editor: ICodeEditor, viewZones: IObservable<IObse
 			}
 			if (setIsUpdating) { setIsUpdating(true); }
 			editor.changeViewZones(a => { for (const id of changeSummary) { a.layoutZone(id); } });
-			if (setIsUpdating) { setIsUpdating(true); }
+			if (setIsUpdating) { setIsUpdating(false); }
 		}));
 	}));
 
@@ -359,7 +361,7 @@ export function applyViewZones(editor: ICodeEditor, viewZones: IObservable<IObse
 		dispose() {
 			if (setIsUpdating) { setIsUpdating(true); }
 			editor.changeViewZones(a => { for (const id of lastViewZoneIds) { a.removeZone(id); } });
-			if (setIsUpdating) { setIsUpdating(true); }
+			if (setIsUpdating) { setIsUpdating(false); }
 		}
 	});
 
