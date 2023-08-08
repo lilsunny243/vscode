@@ -4,49 +4,45 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { getMarkdownLink } from './shared';
+import { createEditAddingLinksForUriList, getPasteUrlAsFormattedLinkSetting, PasteUrlAsFormattedLink, validateLink } from './shared';
+
+const textPlainMime = 'text/plain';
+
 class PasteLinkEditProvider implements vscode.DocumentPasteEditProvider {
 
 	readonly id = 'insertMarkdownLink';
+
 	async provideDocumentPasteEdits(
 		document: vscode.TextDocument,
 		ranges: readonly vscode.Range[],
 		dataTransfer: vscode.DataTransfer,
 		token: vscode.CancellationToken,
 	): Promise<vscode.DocumentPasteEdit | undefined> {
-		const enabled = vscode.workspace.getConfiguration('markdown', document).get<'always' | 'smart' | 'never'>('editor.pasteUrlAsFormattedLink.enabled', 'smart');
-		if (enabled === 'never') {
+		const pasteUrlSetting = getPasteUrlAsFormattedLinkSetting(document);
+		if (pasteUrlSetting === PasteUrlAsFormattedLink.Never) {
 			return;
 		}
 
-		// Check if dataTransfer contains a URL
-		const item = dataTransfer.get('text/plain');
-		try {
-			new URL(await item?.value);
-		} catch (error) {
-			return;
-		}
-
-		const uriEdit = new vscode.DocumentPasteEdit('', this.id, '');
+		const item = dataTransfer.get(textPlainMime);
 		const urlList = await item?.asString();
-		if (!urlList) {
-			return undefined;
+		if (token.isCancellationRequested || !urlList || !validateLink(urlList).isValid) {
+			return;
 		}
-		const pasteEdit = await getMarkdownLink(document, ranges, urlList, token);
+
+		const pasteEdit = await createEditAddingLinksForUriList(document, ranges, validateLink(urlList).cleanedUrlList, true, pasteUrlSetting === PasteUrlAsFormattedLink.Smart, token);
 		if (!pasteEdit) {
 			return;
 		}
 
-		uriEdit.label = pasteEdit.label;
-		uriEdit.additionalEdit = pasteEdit.additionalEdits;
-		return uriEdit;
+		const edit = new vscode.DocumentPasteEdit('', this.id, pasteEdit.label);
+		edit.additionalEdit = pasteEdit.additionalEdits;
+		edit.yieldTo = pasteEdit.markdownLink ? undefined : [{ mimeType: textPlainMime }];
+		return edit;
 	}
 }
 
 export function registerLinkPasteSupport(selector: vscode.DocumentSelector,) {
 	return vscode.languages.registerDocumentPasteEditProvider(selector, new PasteLinkEditProvider(), {
-		pasteMimeTypes: [
-			'text/plain',
-		]
+		pasteMimeTypes: [textPlainMime]
 	});
 }

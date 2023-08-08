@@ -316,7 +316,6 @@
 		"--vscode-inlineChatInput-border",
 		"--vscode-inlineChatInput-focusBorder",
 		"--vscode-inlineChatInput-placeholderForeground",
-		"--vscode-inlineChatrDiff-removed",
 		"--vscode-input-background",
 		"--vscode-input-border",
 		"--vscode-input-foreground",
@@ -698,6 +697,7 @@
 		"--background-light",
 		"--dropdown-padding-bottom",
 		"--dropdown-padding-top",
+		"--hover-maxWidth",
 		"--insert-border-color",
 		"--last-tab-margin-right",
 		"--monaco-monospace-font",
@@ -737,6 +737,7 @@
 		"--vscode-repl-line-height",
 		"--vscode-sash-hover-size",
 		"--vscode-sash-size",
+		"--vscode-editorStickyScroll-scrollableWidth",
 		"--window-border-color",
 		"--workspace-trust-check-color",
 		"--workspace-trust-selected-color",
@@ -756,6 +757,7 @@
 		"--z-index-notebook-progress-bar",
 		"--z-index-notebook-scrollbar",
 		"--z-index-run-button-container",
+		"--z-index-notebook-sticky-scroll",
 		"--zoom-factor"
 	]
 }

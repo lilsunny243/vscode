@@ -12,8 +12,7 @@ import { IInstantiationService } from 'vs/platform/instantiation/common/instanti
 import { KeybindingWeight } from 'vs/platform/keybinding/common/keybindingsRegistry';
 import { IQuickPick, IQuickPickItem } from 'vs/platform/quickinput/common/quickInput';
 import { terminalTabFocusModeContextKey } from 'vs/platform/terminal/common/terminal';
-import { AccessibilityHelpAction } from 'vs/workbench/contrib/accessibility/browser/accessibilityContribution';
-import { IAccessibleViewService } from 'vs/workbench/contrib/accessibility/browser/accessibleView';
+import { AccessibilityHelpAction, IAccessibleViewService } from 'vs/workbench/contrib/accessibility/browser/accessibleView';
 import { ITerminalContribution, ITerminalInstance, ITerminalService, IXtermTerminal } from 'vs/workbench/contrib/terminal/browser/terminal';
 import { registerTerminalAction } from 'vs/workbench/contrib/terminal/browser/terminalActions';
 import { registerTerminalContribution } from 'vs/workbench/contrib/terminal/browser/terminalExtensions';
@@ -79,7 +78,7 @@ export class TerminalAccessibilityHelpContribution extends Disposable {
 				return;
 			}
 			accessibleViewService.show(instantiationService.createInstance(TerminalAccessibleContentProvider, instance, terminal));
-		}, TerminalContextKeys.focus));
+		}, ContextKeyExpr.or(TerminalContextKeys.focus, TerminalContextKeys.accessibleBufferFocus)));
 	}
 }
 registerTerminalContribution(TerminalAccessibilityHelpContribution.ID, TerminalAccessibilityHelpContribution);
@@ -92,7 +91,7 @@ registerTerminalAction({
 		{
 			primary: KeyMod.Shift | KeyCode.Tab,
 			weight: KeybindingWeight.WorkbenchContrib,
-			when: ContextKeyExpr.and(CONTEXT_ACCESSIBILITY_MODE_ENABLED, ContextKeyExpr.or(terminalTabFocusModeContextKey, TerminalContextKeys.accessibleBufferFocus.negate()))
+			when: ContextKeyExpr.and(CONTEXT_ACCESSIBILITY_MODE_ENABLED, TerminalContextKeys.focus, ContextKeyExpr.or(terminalTabFocusModeContextKey, TerminalContextKeys.accessibleBufferFocus.negate()))
 		}
 	],
 	run: async (c) => {
@@ -111,7 +110,7 @@ registerTerminalAction({
 	precondition: ContextKeyExpr.or(TerminalContextKeys.processSupported, TerminalContextKeys.terminalHasBeenCreated),
 	keybinding: [
 		{
-			primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyO,
+			primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyG,
 			weight: KeybindingWeight.WorkbenchContrib + 2,
 			when: TerminalContextKeys.accessibleBufferFocus
 		}

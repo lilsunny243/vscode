@@ -83,22 +83,6 @@ export class EncodedTokenizationResult {
 /**
  * @internal
  */
-export interface IBackgroundTokenizer extends IDisposable {
-	/**
-	 * Instructs the background tokenizer to set the tokens for the given range again.
-	 *
-	 * This might be necessary if the renderer overwrote those tokens with heuristically computed ones for some viewport,
-	 * when the change does not even propagate to that viewport.
-	 */
-	requestTokens(startLineNumber: number, endLineNumberExclusive: number): void;
-
-	reportMismatchingTokens?(lineNumber: number): void;
-}
-
-
-/**
- * @internal
- */
 export interface ITokenizationSupport {
 	/**
 	 * If true, the background tokenizer will only be used to verify tokens against the default background tokenizer.
@@ -116,6 +100,21 @@ export interface ITokenizationSupport {
 	 * Can be/return undefined if default background tokenization should be used.
 	 */
 	createBackgroundTokenizer?(textModel: model.ITextModel, store: IBackgroundTokenizationStore): IBackgroundTokenizer | undefined;
+}
+
+/**
+ * @internal
+ */
+export interface IBackgroundTokenizer extends IDisposable {
+	/**
+	 * Instructs the background tokenizer to set the tokens for the given range again.
+	 *
+	 * This might be necessary if the renderer overwrote those tokens with heuristically computed ones for some viewport,
+	 * when the change does not even propagate to that viewport.
+	 */
+	requestTokens(startLineNumber: number, endLineNumberExclusive: number): void;
+
+	reportMismatchingTokens?(lineNumber: number): void;
 }
 
 /**
@@ -806,7 +805,8 @@ export interface DocumentPasteEdit {
 	readonly id: string;
 	readonly label: string;
 	readonly detail: string;
-	readonly priority: number;
+	readonly handledMimeType?: string;
+	readonly yieldTo?: readonly DropYieldTo[];
 	insertText: string | { readonly snippet: string };
 	additionalEdit?: WorkspaceEdit;
 }
@@ -1179,7 +1179,7 @@ export const symbolKindNames: { [symbol: number]: string } = {
  * @internal
  */
 export function getAriaLabelForSymbol(symbolName: string, kind: SymbolKind): string {
-	return localize('symbolAriaLabel', '{0} Symbol: {1}', symbolName, symbolKindNames[kind]);
+	return localize('symbolAriaLabel', '{0} ({1})', symbolName, symbolKindNames[kind]);
 }
 
 export const enum SymbolTag {
@@ -2012,10 +2012,16 @@ export enum ExternalUriOpenerPriority {
 /**
  * @internal
  */
+export type DropYieldTo = { readonly editId: string } | { readonly mimeType: string };
+
+/**
+ * @internal
+ */
 export interface DocumentOnDropEdit {
 	readonly id: string;
 	readonly label: string;
-	readonly priority: number;
+	readonly handledMimeType?: string;
+	readonly yieldTo?: readonly DropYieldTo[];
 	insertText: string | { readonly snippet: string };
 	additionalEdit?: WorkspaceEdit;
 }

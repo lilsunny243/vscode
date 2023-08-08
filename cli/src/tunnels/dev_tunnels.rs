@@ -3,12 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 use crate::auth;
-use crate::constants::{
-	CONTROL_PORT, IS_INTERACTIVE_CLI, PROTOCOL_VERSION_TAG, TUNNEL_SERVICE_USER_AGENT,
-};
+use crate::constants::{IS_INTERACTIVE_CLI, PROTOCOL_VERSION_TAG, TUNNEL_SERVICE_USER_AGENT};
 use crate::state::{LauncherPaths, PersistedState};
 use crate::util::errors::{
-	wrap, AnyError, DevTunnelError, InvalidTunnelName, TunnelCreationFailed, WrappedError,
+	wrap, AnyError, CodeError, DevTunnelError, InvalidTunnelName, TunnelCreationFailed,
+	WrappedError,
 };
 use crate::util::input::prompt_placeholder;
 use crate::{debug, info, log, spanf, trace, warning};
@@ -32,6 +31,8 @@ use tunnels::management::{
 };
 
 use super::wsl_detect::is_wsl_installed;
+
+static TUNNEL_COUNT_LIMIT_NAME: &str = "TunnelsPerUserPerLocation";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PersistedTunnel {
@@ -134,6 +135,7 @@ pub struct DevTunnels {
 	log: log::Logger,
 	launcher_tunnel: PersistedState<Option<PersistedTunnel>>,
 	client: TunnelManagementClient,
+	tag: &'static str,
 }
 
 /// Representation of a tunnel returned from the `start` methods.
@@ -162,30 +164,43 @@ impl ActiveTunnel {
 	}
 
 	/// Forwards a port over TCP.
-	pub async fn add_port_tcp(&mut self, port_number: u16) -> Result<(), AnyError> {
+	pub async fn add_port_tcp(&self, port_number: u16) -> Result<(), AnyError> {
 		self.manager.add_port_tcp(port_number).await?;
 		Ok(())
 	}
 
 	/// Removes a forwarded port TCP.
-	pub async fn remove_port(&mut self, port_number: u16) -> Result<(), AnyError> {
+	pub async fn remove_port(&self, port_number: u16) -> Result<(), AnyError> {
 		self.manager.remove_port(port_number).await?;
 		Ok(())
 	}
 
-	/// Gets the public URI on which a forwarded port can be access in browser.
-	pub async fn get_port_uri(&mut self, port: u16) -> Result<String, AnyError> {
-		let endpoint = self.manager.get_endpoint().await?;
-		let format = endpoint
-			.base
-			.port_uri_format
-			.expect("expected to have port format");
+	/// Gets the template string for forming forwarded port web URIs..
+	pub fn get_port_format(&self) -> Result<String, AnyError> {
+		if let Some(details) = &*self.manager.endpoint_rx.borrow() {
+			return details
+				.as_ref()
+				.map(|r| {
+					r.base
+						.port_uri_format
+						.clone()
+						.expect("expected to have port format")
+				})
+				.map_err(|e| e.clone().into());
+		}
 
-		Ok(format.replace(PORT_TOKEN, &port.to_string()))
+		Err(CodeError::NoTunnelEndpoint.into())
+	}
+
+	/// Gets the public URI on which a forwarded port can be access in browser.
+	pub fn get_port_uri(&self, port: u16) -> Result<String, AnyError> {
+		self.get_port_format()
+			.map(|f| f.replace(PORT_TOKEN, &port.to_string()))
 	}
 }
 
 const VSCODE_CLI_TUNNEL_TAG: &str = "vscode-server-launcher";
+const VSCODE_CLI_FORWARDING_TAG: &str = "vscode-port-forward";
 const MAX_TUNNEL_NAME_LENGTH: usize = 20;
 
 fn get_host_token_from_tunnel(tunnel: &Tunnel) -> String {
@@ -229,7 +244,7 @@ lazy_static! {
 #[derive(Clone, Debug)]
 pub struct ExistingTunnel {
 	/// Name you'd like to assign preexisting tunnel to use to connect to the VS Code Server
-	pub tunnel_name: String,
+	pub tunnel_name: Option<String>,
 
 	/// Token to authenticate and use preexisting tunnel
 	pub host_token: String,
@@ -242,7 +257,29 @@ pub struct ExistingTunnel {
 }
 
 impl DevTunnels {
-	pub fn new(log: &log::Logger, auth: auth::Auth, paths: &LauncherPaths) -> DevTunnels {
+	/// Creates a new DevTunnels client used for port forwarding.
+	pub fn new_port_forwarding(
+		log: &log::Logger,
+		auth: auth::Auth,
+		paths: &LauncherPaths,
+	) -> DevTunnels {
+		let mut client = new_tunnel_management(&TUNNEL_SERVICE_USER_AGENT);
+		client.authorization_provider(auth);
+
+		DevTunnels {
+			log: log.clone(),
+			client: client.into(),
+			launcher_tunnel: PersistedState::new(paths.root().join("port_forwarding_tunnel.json")),
+			tag: VSCODE_CLI_FORWARDING_TAG,
+		}
+	}
+
+	/// Creates a new DevTunnels client used for the Remote Tunnels extension to access the VS Code Server.
+	pub fn new_remote_tunnel(
+		log: &log::Logger,
+		auth: auth::Auth,
+		paths: &LauncherPaths,
+	) -> DevTunnels {
 		let mut client = new_tunnel_management(&TUNNEL_SERVICE_USER_AGENT);
 		client.authorization_provider(auth);
 
@@ -250,6 +287,7 @@ impl DevTunnels {
 			log: log.clone(),
 			client: client.into(),
 			launcher_tunnel: PersistedState::new(paths.root().join("code_tunnel.json")),
+			tag: VSCODE_CLI_TUNNEL_TAG,
 		}
 	}
 
@@ -364,6 +402,7 @@ impl DevTunnels {
 		&mut self,
 		preferred_name: Option<&str>,
 		use_random_name: bool,
+		preserve_ports: &[u16],
 	) -> Result<ActiveTunnel, AnyError> {
 		let (mut tunnel, persisted) = match self.launcher_tunnel.load() {
 			Some(mut persisted) => {
@@ -393,7 +432,12 @@ impl DevTunnels {
 		};
 
 		tunnel = self
-			.sync_tunnel_tags(&persisted.name, tunnel, &HOST_TUNNEL_REQUEST_OPTIONS)
+			.sync_tunnel_tags(
+				&self.client,
+				&persisted.name,
+				tunnel,
+				&HOST_TUNNEL_REQUEST_OPTIONS,
+			)
 			.await?;
 
 		let locator = TunnelLocator::try_from(&tunnel).unwrap();
@@ -402,7 +446,7 @@ impl DevTunnels {
 		for port_to_delete in tunnel
 			.ports
 			.iter()
-			.filter(|p| p.port_number != CONTROL_PORT)
+			.filter(|p: &&TunnelPort| !preserve_ports.contains(&p.port_number))
 		{
 			let output_fut = self.client.delete_tunnel_port(
 				&locator,
@@ -453,14 +497,8 @@ impl DevTunnels {
 
 		self.check_is_name_free(name).await?;
 
-		let mut tried_recycle = false;
-
 		let new_tunnel = Tunnel {
-			tags: vec![
-				name.to_string(),
-				PROTOCOL_VERSION_TAG.to_string(),
-				VSCODE_CLI_TUNNEL_TAG.to_string(),
-			],
+			tags: self.get_tags(name),
 			..Default::default()
 		};
 
@@ -475,13 +513,14 @@ impl DevTunnels {
 				Err(HttpError::ResponseError(e))
 					if e.status_code == StatusCode::TOO_MANY_REQUESTS =>
 				{
-					if !tried_recycle && self.try_recycle_tunnel().await? {
-						tried_recycle = true;
-						continue;
-					}
-
 					if let Some(d) = e.get_details() {
 						let detail = d.detail.unwrap_or_else(|| "unknown".to_string());
+						if detail.contains(TUNNEL_COUNT_LIMIT_NAME)
+							&& self.try_recycle_tunnel().await?
+						{
+							continue;
+						}
+
 						return Err(AnyError::from(TunnelCreationFailed(
 							name.to_string(),
 							detail,
@@ -518,7 +557,7 @@ impl DevTunnels {
 		let mut tags = vec![
 			name.to_string(),
 			PROTOCOL_VERSION_TAG.to_string(),
-			VSCODE_CLI_TUNNEL_TAG.to_string(),
+			self.tag.to_string(),
 		];
 
 		if is_wsl_installed(&self.log) {
@@ -532,6 +571,7 @@ impl DevTunnels {
 	/// other version tags.
 	async fn sync_tunnel_tags(
 		&self,
+		client: &TunnelManagementClient,
 		name: &str,
 		tunnel: Tunnel,
 		options: &TunnelRequestOptions,
@@ -558,7 +598,7 @@ impl DevTunnels {
 		let result = spanf!(
 			self.log,
 			self.log.span("dev-tunnel.protocol-tag-update"),
-			self.client.update_tunnel(&tunnel_update, options)
+			client.update_tunnel(&tunnel_update, options)
 		);
 
 		result.map_err(|e| wrap(e, "tunnel tag update failed").into())
@@ -609,7 +649,7 @@ impl DevTunnels {
 			self.log,
 			self.log.span("dev-tunnel.listall"),
 			self.client.list_all_tunnels(&TunnelRequestOptions {
-				tags: vec![VSCODE_CLI_TUNNEL_TAG.to_string()],
+				tags: vec![self.tag.to_string()],
 				require_all_tags: true,
 				..Default::default()
 			})
@@ -624,7 +664,7 @@ impl DevTunnels {
 			self.log,
 			self.log.span("dev-tunnel.rename.search"),
 			self.client.list_all_tunnels(&TunnelRequestOptions {
-				tags: vec![VSCODE_CLI_TUNNEL_TAG.to_string(), name.to_string()],
+				tags: vec![self.tag.to_string(), name.to_string()],
 				require_all_tags: true,
 				..Default::default()
 			})
@@ -637,6 +677,12 @@ impl DevTunnels {
 			)));
 		};
 		Ok(())
+	}
+
+	fn get_placeholder_name() -> String {
+		let mut n = clean_hostname_for_tunnel(&gethostname::gethostname().to_string_lossy());
+		n.make_ascii_lowercase();
+		n
 	}
 
 	async fn get_name_for_tunnel(
@@ -670,10 +716,7 @@ impl DevTunnels {
 			use_random_name = true;
 		}
 
-		let mut placeholder_name =
-			clean_hostname_for_tunnel(&gethostname::gethostname().to_string_lossy());
-		placeholder_name.make_ascii_lowercase();
-
+		let mut placeholder_name = Self::get_placeholder_name();
 		if !is_name_free(&placeholder_name) {
 			for i in 2.. {
 				let fixed_name = format!("{}{}", placeholder_name, i);
@@ -715,7 +758,10 @@ impl DevTunnels {
 		tunnel: ExistingTunnel,
 	) -> Result<ActiveTunnel, AnyError> {
 		let tunnel_details = PersistedTunnel {
-			name: tunnel.tunnel_name,
+			name: match tunnel.tunnel_name {
+				Some(n) => n,
+				None => Self::get_placeholder_name(),
+			},
 			id: tunnel.tunnel_id,
 			cluster: tunnel.cluster,
 		};
@@ -725,10 +771,23 @@ impl DevTunnels {
 			tunnel.host_token.clone(),
 		));
 
+		let client = mgmt.into();
+		self.sync_tunnel_tags(
+			&client,
+			&tunnel_details.name,
+			Tunnel {
+				cluster_id: Some(tunnel_details.cluster.clone()),
+				tunnel_id: Some(tunnel_details.id.clone()),
+				..Default::default()
+			},
+			&HOST_TUNNEL_REQUEST_OPTIONS,
+		)
+		.await?;
+
 		self.start_tunnel(
 			tunnel_details.locator(),
 			&tunnel_details,
-			mgmt.into(),
+			client,
 			StaticAccessTokenProvider::new(tunnel.host_token),
 		)
 		.await
